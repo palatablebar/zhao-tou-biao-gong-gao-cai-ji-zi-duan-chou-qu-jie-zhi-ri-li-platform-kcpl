@@ -52,6 +52,11 @@ export const http = {
       method: 'PATCH',
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
+  delete: <T>(path: string, body?: unknown) =>
+    request<T>(path, {
+      method: 'DELETE',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
 };
 
 /** 下载 CSV：带 Bearer 头，用 blob 触发浏览器保存，用于导出本周必投名单。 */

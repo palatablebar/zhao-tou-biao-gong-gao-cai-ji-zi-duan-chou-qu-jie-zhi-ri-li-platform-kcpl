@@ -13,6 +13,7 @@ import {
   FIELD_LABEL,
   NOTICE_STATUS_LABEL,
   QUAL_LABEL,
+  VERSION_STATUS_LABEL,
 } from '../constants/enums';
 import { errorMessage } from '../utils/errorMessage';
 import { fmtDateTime, fmtNumber } from '../utils/format';
@@ -92,6 +93,38 @@ export default function NoticeDetail() {
         </div>
       </div>
 
+      {notice.project ? (
+        <section className="panel project-banner">
+          <div className="field-row-head">
+            <Stamp tone={notice.project.project_status === 'withdrawn' ? 'faint' : 'seal'}>
+              {notice.project.project_status === 'withdrawn' ? '项目已撤回' : '归并项目'}
+            </Stamp>
+            <span className="mono small">
+              {notice.project.source_count} 个有效来源 · 冲突 {notice.project.conflict_count} · 待补{' '}
+              {notice.project.pending_field_count}
+            </span>
+            <Link className="btn btn-sm" to={`/projects/${notice.project.project_id}`}>
+              查看项目卷宗 →
+            </Link>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="panel">
+        <div className="panel-head">
+          <h2>正文版本链</h2>
+          <span className="meta mono">更正保留旧版，撤下只标记不删除</span>
+        </div>
+        <div className="version-chain">
+          {(notice.versions ?? []).map((version) => (
+            <span key={version.version_no} className={`version-chip version-${version.status}`}>
+              v{version.version_no} · {VERSION_STATUS_LABEL[version.status]}
+              {version.change_note ? <em className="mono">（{version.change_note}）</em> : null}
+            </span>
+          ))}
+        </div>
+      </section>
+
       <div className="detail-grid">
         <section className="panel body-panel">
           <div className="panel-head">
@@ -149,7 +182,11 @@ export default function NoticeDetail() {
               <article className="deadline-card" key={event.id}>
                 <header>
                   <span className="mono">{DEADLINE_KIND_LABEL[event.kind]}</span>
-                  <RiskBadge level={event.risk_level} score={event.risk_score} />
+                  {event.is_active === false ? (
+                    <Stamp tone="faint">已停用</Stamp>
+                  ) : (
+                    <RiskBadge level={event.risk_level} score={event.risk_score} />
+                  )}
                 </header>
                 <div className="deadline-time mono">{fmtDateTime(event.event_at)}</div>
                 <div className="deadline-facts">
@@ -157,7 +194,7 @@ export default function NoticeDetail() {
                   <span>截止压力 {event.deadline_pressure ?? '—'}</span>
                   <span>资质差距 {event.qualify_gap ?? '—'}</span>
                 </div>
-                <p className="deadline-note">{event.note}</p>
+                <p className="deadline-note">{event.inactive_reason || event.note}</p>
               </article>
             ))}
           </div>

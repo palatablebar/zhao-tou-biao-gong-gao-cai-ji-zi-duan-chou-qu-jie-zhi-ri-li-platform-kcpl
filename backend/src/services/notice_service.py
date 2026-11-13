@@ -1,7 +1,7 @@
 """公告：看板列表（筛选 + 置信度标记）与详情（正文高亮 + 字段核对）。"""
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.config.settings import settings
@@ -11,6 +11,10 @@ from src.constants.limits import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from src.models.deadline_event import DeadlineEvent
 from src.models.extracted_field import ExtractedField
 from src.models.notice import Notice
+from src.models.notice_version import NoticeVersion
+from src.models.project import Project
+from src.models.project_field_decision import ProjectFieldDecision
+from src.models.project_source import ProjectSource
 from src.models.site import Site
 from src.services import field_service
 from src.utils.errors import AppError
@@ -22,6 +26,55 @@ def _parse_date(value: str | None):
     from src.utils.timeutil import parse_local
 
     return parse_local(value)
+
+
+def _project_contexts(db: Session, notice_ids: list[int]) -> dict[int, dict]:
+    """批量取每条公告所属项目的归并上下文（来源数/项目状态/冲突/待裁定）。"""
+    if not notice_ids:
+        return {}
+    rows = db.execute(
+        select(ProjectSource, Project)
+        .join(Project, Project.id == ProjectSource.project_id)
+        .where(ProjectSource.notice_id.in_(notice_ids))
+    ).all()
+    project_ids = {project.id for _, project in rows}
+    project_source_totals = dict(
+        db.execute(
+            select(ProjectSource.project_id, func.count())
+            .where(ProjectSource.project_id.in_(project_ids))
+            .group_by(ProjectSource.project_id)
+        ).all()
+    ) if project_ids else {}
+    project_conflicts = dict(
+        db.execute(
+            select(ProjectFieldDecision.project_id, func.count(ProjectFieldDecision.id))
+            .where(
+                ProjectFieldDecision.project_id.in_(project_ids),
+                ProjectFieldDecision.status == "conflict",
+            )
+            .group_by(ProjectFieldDecision.project_id)
+        ).all()
+    ) if project_ids else {}
+    project_pending = dict(
+        db.execute(
+            select(ProjectFieldDecision.project_id, func.count(ProjectFieldDecision.id))
+            .where(
+                ProjectFieldDecision.project_id.in_(project_ids),
+                ProjectFieldDecision.status == "pending",
+            )
+            .group_by(ProjectFieldDecision.project_id)
+        ).all()
+    ) if project_ids else {}
+    result: dict[int, dict] = {}
+    for source, project in rows:
+        result[source.notice_id] = {
+            "project_id": project.id,
+            "project_status": project.status,
+            "source_count": project_source_totals.get(project.id, 1),
+            "conflict_count": project_conflicts.get(project.id, 0),
+            "pending_field_count": project_pending.get(project.id, 0),
+        }
+    return result
 
 
 def _fields_by_notice(db: Session, notice_ids: list[int]) -> dict[int, list[ExtractedField]]:
@@ -97,6 +150,7 @@ def serialize_notice_item(
     site_name: str,
     fields: list[ExtractedField],
     events: list[DeadlineEvent],
+    project_ctx: dict | None = None,
 ) -> dict:
     return {
         "id": notice.id,
@@ -115,6 +169,9 @@ def serialize_notice_item(
         "published_at": iso_local(notice.published_at),
         "byte_size": notice.byte_size,
         "crawl_run_id": notice.crawl_run_id,
+        "current_version_no": notice.current_version_no,
+        "withdrawn_at": iso_local(notice.withdrawn_at),
+        "project": project_ctx,
         "aggregate": _aggregate(fields, events),
     }
 
@@ -148,13 +205,17 @@ def list_notices(
     stmt = stmt.order_by(Notice.published_at.desc(), Notice.id.desc())
     rows = db.execute(stmt).all()
     notices = [(notice, site_name) for notice, site_name in rows]
-    fields_map = _fields_by_notice(db, [notice.id for notice, _ in notices])
-    events_map = _events_by_notice(db, [notice.id for notice, _ in notices])
+    notice_ids = [notice.id for notice, _ in notices]
+    fields_map = _fields_by_notice(db, notice_ids)
+    events_map = _events_by_notice(db, notice_ids)
+    project_ctx_map = _project_contexts(db, notice_ids)
     items: list[dict] = []
     for notice, site_name in notices:
         fields = fields_map.get(notice.id, [])
         events = events_map.get(notice.id, [])
-        item = serialize_notice_item(db, notice, site_name, fields, events)
+        item = serialize_notice_item(
+            db, notice, site_name, fields, events, project_ctx_map.get(notice.id)
+        )
         if confidence == "low" and item["aggregate"]["low_confidence_count"] == 0:
             continue
         if confidence == "clean" and item["aggregate"]["low_confidence_count"] > 0:
@@ -205,7 +266,14 @@ def get_notice_detail(db: Session, notice_id: int) -> dict:
         .where(DeadlineEvent.notice_id == notice.id)
         .order_by(DeadlineEvent.event_at)
     ).all()
-    item = serialize_notice_item(db, notice, site.name if site else "", list(fields), list(events))
+    item = serialize_notice_item(
+        db,
+        notice,
+        site.name if site else "",
+        list(fields),
+        list(events),
+        _project_contexts(db, [notice.id]).get(notice.id),
+    )
     item["fields"] = [field_service.serialize_field(db, field, notice) for field in fields]
     item["deadlines"] = [
         {
@@ -213,6 +281,8 @@ def get_notice_detail(db: Session, notice_id: int) -> dict:
             "kind": event.kind,
             "event_at": iso_local(event.event_at),
             "precision": event.precision,
+            "is_active": event.is_active,
+            "inactive_reason": event.inactive_reason,
             "risk_level": event.risk_level,
             "risk_score": event.risk_score,
             "deadline_pressure": event.deadline_pressure,
@@ -222,6 +292,23 @@ def get_notice_detail(db: Session, notice_id: int) -> dict:
             "computed_at": iso_local(event.computed_at),
         }
         for event in events
+    ]
+    versions = db.scalars(
+        select(NoticeVersion)
+        .where(NoticeVersion.notice_id == notice.id)
+        .order_by(NoticeVersion.version_no)
+    ).all()
+    item["versions"] = [
+        {
+            "version_no": v.version_no,
+            "status": v.status,
+            "content_hash": v.content_hash,
+            "change_note": v.change_note,
+            "byte_size": v.byte_size,
+            "seen_at": iso_local(v.seen_at),
+            "withdrawn_at": iso_local(v.withdrawn_at),
+        }
+        for v in versions
     ]
     item["body_lines"] = _body_lines(notice, list(fields))
     item["site"] = {

@@ -59,6 +59,13 @@ class RecomputeIn(BaseModel):
     as_of: str | None = None
 
 
+class ProjectAdjudicateIn(BaseModel):
+    field_key: str = Field(min_length=2, max_length=30)
+    value: str | None = Field(default=None, max_length=255)
+    unit: str | None = None
+    source_notice_id: int | None = None
+
+
 class PageOut(BaseModel):
     total: int
     page: int

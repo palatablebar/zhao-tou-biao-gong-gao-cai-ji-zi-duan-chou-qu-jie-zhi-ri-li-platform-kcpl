@@ -7,6 +7,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { to: '/notices', label: '公告登记簿', hint: 'NOTICE', permission: 'notice:read' },
+  { to: '/projects', label: '项目归并', hint: 'PROJECT', permission: 'project:read' },
   { to: '/calendar', label: '截止日历', hint: 'DEADLINE', permission: 'deadline:read' },
   { to: '/sites', label: '采源与模板', hint: 'SOURCE', permission: 'site:read' },
   { to: '/review', label: '复核队列', hint: 'REVIEW', permission: 'review:read' },

@@ -1,13 +1,17 @@
 /** 前端共享枚举（后端 src/constants/enums.py 对应同一组值）。 */
 import type {
   DeadlineKind,
+  DecisionBasis,
+  DecisionStatus,
   FieldKey,
   FieldStatus,
   NoticeStatus,
+  ProjectStatus,
   RiskLevel,
   RunStatus,
   SiteStatus,
   TemplateStatus,
+  VersionStatus,
 } from '../types/models';
 
 export const SITE_STATUS_LABEL: Record<SiteStatus, string> = {
@@ -28,6 +32,35 @@ export const NOTICE_STATUS_LABEL: Record<NoticeStatus, string> = {
   tracking: '跟踪中',
   reviewing: '复核中',
   archived: '已归档',
+  superseded: '已被更正',
+  withdrawn: '已撤回',
+};
+
+export const VERSION_STATUS_LABEL: Record<VersionStatus, string> = {
+  active: '当前版本',
+  superseded: '历史版本',
+  withdrawn: '已撤回',
+};
+
+export const PROJECT_STATUS_LABEL: Record<ProjectStatus, string> = {
+  active: '跟踪中',
+  withdrawn: '已撤回',
+};
+
+export const DECISION_STATUS_LABEL: Record<DecisionStatus, string> = {
+  auto: '系统裁决',
+  manual: '人工确认',
+  conflict: '来源冲突',
+  pending: '待补全',
+};
+
+export const DECISION_BASIS_LABEL: Record<DecisionBasis, string> = {
+  single_source: '唯一来源',
+  highest_confidence: '置信度最高',
+  latest_published: '发布时间最新',
+  manual_confirm: '人工确认',
+  manual_override: '人工修正',
+  none: '无可用值',
 };
 
 export const FIELD_LABEL: Record<FieldKey, string> = {

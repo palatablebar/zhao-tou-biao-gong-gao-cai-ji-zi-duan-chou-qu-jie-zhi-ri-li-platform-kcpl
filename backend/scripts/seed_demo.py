@@ -2,9 +2,10 @@
 
 自然键：
 - users.email、sites.domain、templates(site_id,name,version)、notices(site_id,external_id)
+- notice_versions(notice_id,version_no)、projects.merge_key、
+  project_sources(project_id,site_id)、project_field_decisions(project_id,field_key)
 - extracted_fields(notice_id,field_key)（已复核字段不覆盖）
-- deadline_events(notice_id,kind)
-- crawl_runs.seed_key
+- deadline_events(notice_id,kind)、crawl_runs.seed_key
 
 重复执行不新增、不覆盖人工修改；结束打印一行 SEED_SUMMARY（键顺序固定）。
 """
@@ -21,10 +22,18 @@ from src.models.crawl_run import CrawlRun
 from src.models.deadline_event import DeadlineEvent
 from src.models.extracted_field import ExtractedField
 from src.models.notice import Notice
+from src.models.notice_version import NoticeVersion
+from src.models.project import Project
 from src.models.site import Site
 from src.models.template import ExtractionTemplate
 from src.models.user import User
-from src.services import audit_service, crawl_service, deadline_service, source_catalog, template_service
+from src.services import (
+    audit_service,
+    crawl_service,
+    deadline_service,
+    source_catalog,
+    template_service,
+)
 from src.utils.security import hash_password
 
 DEMO_PASSWORD = "Demo@2026"
@@ -166,26 +175,42 @@ def ensure_notices(db, sites: dict[str, Site], run: CrawlRun) -> int:
         )
         if existing is not None:
             continue
+        notice = Notice(
+            site_id=site.id,
+            crawl_run_id=run.id,
+            external_id=payload["external_id"],
+            title=payload["title"],
+            url=payload["url"],
+            publisher=payload["publisher"],
+            region=payload["region"],
+            category=payload["category"],
+            industry=payload["industry"],
+            published_at=payload["published_at"],
+            qualification=payload["qualification"],
+            body_kind=payload["body_kind"],
+            raw_html=payload["raw_html"],
+            clean_text=payload["clean_text"],
+            content_hash=payload["content_hash"],
+            byte_size=payload["byte_size"],
+            status=payload["status"],
+            merge_key=source_catalog.merge_key_for_payload(payload),
+            current_version_no=1,
+            first_crawl_run_id=run.id,
+            seed_key=f"notice:{payload['index']:04d}",
+        )
+        db.add(notice)
+        db.flush()
         db.add(
-            Notice(
-                site_id=site.id,
+            NoticeVersion(
+                notice_id=notice.id,
+                version_no=1,
+                status="active",
+                content_hash=notice.content_hash,
+                raw_html=notice.raw_html,
+                clean_text=notice.clean_text,
+                byte_size=notice.byte_size,
+                change_note="基线首次采集版本",
                 crawl_run_id=run.id,
-                external_id=payload["external_id"],
-                title=payload["title"],
-                url=payload["url"],
-                publisher=payload["publisher"],
-                region=payload["region"],
-                category=payload["category"],
-                industry=payload["industry"],
-                published_at=payload["published_at"],
-                qualification=payload["qualification"],
-                body_kind=payload["body_kind"],
-                raw_html=payload["raw_html"],
-                clean_text=payload["clean_text"],
-                content_hash=payload["content_hash"],
-                byte_size=payload["byte_size"],
-                status=payload["status"],
-                seed_key=f"notice:{payload['index']:04d}",
             )
         )
         created += 1
@@ -242,13 +267,18 @@ def seed_all() -> str:
         run = ensure_baseline_run(db)
         ensure_notices(db, sites, run)
         extraction = crawl_service.extract_all(db)
+        # 基线公告归并为项目（每个基线公告一个项目，跨来源副本在后续采集批次加入）
+        crawl_service._merge_all(db, run.id)  # noqa: SLF001 - seed 复用归并编排
         deadline_service.ensure_tracked_events(db)
-        risk = deadline_service.recompute_events(db)
+        deadline_service.sync_project_events(db)
+        deadline_service.recompute_events(db)
         run.field_count = extraction["field_count"]
         run.low_confidence_count = extraction["low_confidence_count"]
+        run.crawl_ordinal = 0
+        run.merged_count = db.scalar(select(func.count()).select_from(Project)) or 0
         run.note = (
             f"首轮全站采集（2026-11-11 06:00 批次）；抽取 {extraction['field_count']} 字段，"
-            f"低置信 {extraction['low_confidence_count']}"
+            f"低置信 {extraction['low_confidence_count']}；归并项目 {run.merged_count}"
         )
         ensure_audit_trail(db, users)
         db.flush()
@@ -257,6 +287,7 @@ def seed_all() -> str:
         notices_count = db.scalar(select(func.count()).select_from(Notice)) or 0
         fields_count = db.scalar(select(func.count()).select_from(ExtractedField)) or 0
         deadlines_count = db.scalar(select(func.count()).select_from(DeadlineEvent)) or 0
+        projects_count = db.scalar(select(func.count()).select_from(Project)) or 0
         users_count = db.scalar(select(func.count()).select_from(User)) or 0
         return (
             f"SEED_SUMMARY brand=bidsift "
@@ -264,6 +295,7 @@ def seed_all() -> str:
             f"notices={notices_count} "
             f"fields={fields_count} "
             f"deadlines={deadlines_count} "
+            f"projects={projects_count} "
             f"users={users_count}"
         )
 

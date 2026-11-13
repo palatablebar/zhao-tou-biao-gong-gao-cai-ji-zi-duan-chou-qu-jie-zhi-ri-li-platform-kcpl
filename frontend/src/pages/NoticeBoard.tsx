@@ -59,7 +59,9 @@ export default function NoticeBoard() {
       const result = await crawlApi.start();
       uiStore.push(
         'ok',
-        `采集批次 #${result.run.id} 完成：抓取 ${result.run.fetched_count} 条，去重 ${result.run.duplicate_count} 条，` +
+        `采集批次 #${result.run.id}（第 ${result.run.crawl_ordinal ?? '-'} 批）：抓取 ${result.run.fetched_count} 条，` +
+          `新登 ${result.run.inserted_count} / 更正 ${result.run.corrected_count ?? 0} / 重复 ${result.run.duplicate_count} / 失败 ${result.run.error_count}；` +
+          `归并项目 ${result.run.merged_count ?? '-'}，冲突待裁 ${result.run.conflict_count ?? '-'}，撤回 ${result.run.withdrawn_count ?? '-'}；` +
           `抽取 ${result.run.field_count} 字段（低置信 ${result.run.low_confidence_count}），耗时 ${result.run.duration_ms} ms`,
       );
       meta.reload();
@@ -254,6 +256,21 @@ export default function NoticeBoard() {
                         {notice.body_kind === 'pdf' ? (
                           <Stamp tone="brass" rotate={-1}>
                             附件正文
+                          </Stamp>
+                        ) : null}
+                        {notice.project && notice.project.source_count > 1 ? (
+                          <Stamp tone="ink" rotate={-2} title={`归并项目 #${notice.project.project_id}`}>
+                            {notice.project.source_count} 来源
+                          </Stamp>
+                        ) : null}
+                        {notice.project?.conflict_count ? (
+                          <Stamp tone="seal" rotate={1}>
+                            {notice.project.conflict_count} 冲突
+                          </Stamp>
+                        ) : null}
+                        {notice.status === 'withdrawn' ? (
+                          <Stamp tone="faint" rotate={-1}>
+                            已撤回
                           </Stamp>
                         ) : null}
                         {agg.low_confidence_count > 0 ? (

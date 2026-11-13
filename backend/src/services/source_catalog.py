@@ -423,3 +423,239 @@ def notices_for_site(domain: str) -> list[dict]:
 
 def tracked_plan_by_index() -> dict[int, dict]:
     return {item["index"]: item for item in TRACKED_PLAN}
+
+
+# ============================================================================
+# 跨来源归并剧情（转发 / 更正 / 撤下 / 来源冲突 / 失败重试）
+# ----------------------------------------------------------------------------
+# 基线 120 条公告保持不变；以下剧情在「采集批次」时以额外来源副本（mirror）注入。
+# 每个 mirror 是另一个交易中心转发同一项目的公告，external_id 独立，
+# 但 merge_key 与原公告一致，merge_service 据此把它们归并到同一 Project。
+# phase 表示该副本从第几个采集批次（ordinal，从 1 起）开始出现/生效。
+# ============================================================================
+
+# 归一化项目名（与 build_notice 的 project_name 去掉城市前缀后对齐用）
+def _project_core_name(index: int) -> str:
+    base = PROJECT_BASES[index % len(PROJECT_BASES)]
+    phase_cn = ["一期", "二期", "三期", "四期"][(index // 2) % 4]
+    return f"{base}工程（{phase_cn}）施工"
+
+
+@dataclass(frozen=True)
+class MirrorSpec:
+    """跨来源副本：base_index 原公告在 target_site 站点上的转发/更正/撤回副本。"""
+
+    key: str
+    base_index: int
+    target_site_key: str
+    appear_phase: int          # 从该 ordinal 起出现
+    kind: str                  # forward / correction / withdraw / conflict
+    external_seq: int          # 副本 external_id 序号（稳定）
+    withdrawn_phase: int | None = None   # 该副本在第几批被来源撤下
+    base_withdrawn_phase: int | None = None  # 原公告在第几批被主站撤下
+    # 更正/冲突时的字段覆盖（作用于清洗正文行）
+    overrides: tuple[tuple[str, str], ...] = ()
+    note: str = ""
+
+
+# 剧情分组（base_index 均取自基线 120 条，互不重叠）
+MIRROR_PLAN: list[MirrorSpec] = [
+    # —— 组 A：纯转发，跨 2 个来源，字段完全一致（验证归并去重）——
+    MirrorSpec(
+        key="A-forward-1", base_index=2, target_site_key="gdggzy", appear_phase=1,
+        kind="forward", external_seq=9001,
+        note="广东中心转发全国平台项目，正文一致",
+    ),
+    MirrorSpec(
+        key="A-forward-2", base_index=2, target_site_key="jsggzy", appear_phase=2,
+        kind="forward", external_seq=9002,
+        note="江苏中心第二批转发同一项目",
+    ),
+    # —— 组 B：更正后旧版不再覆盖（主站第二批发更正公告）——
+    MirrorSpec(
+        key="B-correction", base_index=6, target_site_key="ggzy", appear_phase=2,
+        kind="correction", external_seq=9010,
+        overrides=(("budget", "9,800.00 万元"),),
+        note="主站发布更正公告，预算金额调整",
+    ),
+    # —— 组 C：撤回项目，从必投名单移除（主站第三批撤下，转发源第四批撤下）——
+    MirrorSpec(
+        key="C-withdraw-mirror", base_index=10, target_site_key="zjggzy", appear_phase=1,
+        kind="forward", external_seq=9020, base_withdrawn_phase=3, withdrawn_phase=4,
+        note="项目先转发后被撤下",
+    ),
+    # —— 组 D：来源冲突，待人工裁定（两地预算金额不一致）——
+    MirrorSpec(
+        key="D-conflict", base_index=14, target_site_key="scggzy", appear_phase=1,
+        kind="conflict", external_seq=9030,
+        overrides=(("budget", "1,250.00 万元"),),
+        note="四川中心转发时预算口径与主站不一致",
+    ),
+    # —— 组 E：转发 + 截止时间冲突 ——
+    MirrorSpec(
+        key="E-conflict-deadline", base_index=18, target_site_key="sdggzy", appear_phase=2,
+        kind="conflict", external_seq=9040,
+        overrides=(("deadline", "2026年11月20日 12:00"),),
+        note="山东中心转发的报名截止时间与主站不同",
+    ),
+    # —— 组 F：三来源，其中一个第二批撤回，项目仍有效 ——
+    MirrorSpec(
+        key="F-forward-1", base_index=22, target_site_key="gdggzy", appear_phase=1,
+        kind="forward", external_seq=9050, withdrawn_phase=2,
+        note="广东来源第二批撤下该转发",
+    ),
+    MirrorSpec(
+        key="F-forward-2", base_index=22, target_site_key="jsggzy", appear_phase=1,
+        kind="forward", external_seq=9051,
+        note="江苏来源持续有效",
+    ),
+    # —— 组 G：失败重试补齐（该来源副本第一批抓取失败，第二批才出现）——
+    MirrorSpec(
+        key="G-retry", base_index=26, target_site_key="sdggzy", appear_phase=1,
+        kind="forward", external_seq=9060,
+        note="第一批模拟抓取失败，第二批重试补齐",
+    ),
+    # —— 组 H：更正后撤回（先更正，再整体撤下）——
+    MirrorSpec(
+        key="H-correction", base_index=30, target_site_key="ggzy", appear_phase=2,
+        kind="correction", external_seq=9070,
+        overrides=(("opening", "广州市天河区公共资源交易服务中心 开标二室"),),
+        note="主站更正开标地点",
+    ),
+]
+
+# 第一批采集时模拟「瞬时失败」的副本（第二批恢复），用于验证失败后重试补齐
+TRANSIENT_FAIL_KEYS: frozenset[str] = frozenset({"G-retry"})
+
+# 各 base_index 的撤回批次（主站撤下原公告）
+BASE_WITHDRAW_PHASE: dict[int, int] = {
+    spec.base_index: spec.base_withdrawn_phase
+    for spec in MIRROR_PLAN
+    if spec.base_withdrawn_phase is not None
+}
+
+# 原公告自身在主站被撤下的批次（含其全部来源联动）
+PROJECT_WITHDRAW_PHASE: dict[int, int] = {10: 3, 30: 4}
+
+
+def _mirror_external_id(spec: MirrorSpec) -> str:
+    # 更正公告作用于主站同一登记号（同 external_id、新正文 → 版本链 v2）；
+    # 转发/冲突副本才在目标来源使用独立登记号。
+    if spec.kind == "correction":
+        return build_notice(spec.base_index)["external_id"]
+    site = next(item for item in SITE_SPECS if item.key == spec.target_site_key)
+    return f"BID-{site.key.upper()}-2026-{spec.external_seq:04d}"
+
+
+def _apply_line_overrides(lines: list[str], overrides: tuple[tuple[str, str], ...]) -> list[str]:
+    result = list(lines)
+    for field, value in overrides:
+        if field == "budget":
+            prefix = "预算金额："
+        elif field == "deadline":
+            prefix = "报名截止时间："
+        elif field == "opening":
+            prefix = "开标地点："
+        else:
+            continue
+        for idx, line in enumerate(result):
+            if line.startswith(prefix):
+                result[idx] = prefix + value
+                break
+    return result
+
+
+def build_mirror_notice(spec: MirrorSpec) -> dict:
+    """基于 base 公告构造跨来源副本（确定性纯函数）。"""
+    base = build_notice(spec.base_index)
+    target = next(item for item in SITE_SPECS if item.key == spec.target_site_key)
+    external_id = _mirror_external_id(spec)
+    lines = [line for line in base["clean_text"].split("\n") if line.strip()]
+    lines = _apply_line_overrides(lines, spec.overrides)
+    # 替换交易编号与发布媒体行，保留项目其余要素
+    updated: list[str] = []
+    for line in lines:
+        if line.startswith("交易编号："):
+            updated.append(f"交易编号：{external_id}")
+        elif "｜发布媒体：" in line:
+            updated.append(line.split("｜发布媒体：", 1)[0] + f"｜发布媒体：{target.name}")
+        else:
+            updated.append(line)
+    lines = updated
+    clean = clean_text("\n".join(lines))
+    html = render_html(base["title"].replace(base["external_id"], external_id), lines)
+    return {
+        "mirror_key": spec.key,
+        "base_index": spec.base_index,
+        "site_key": target.key,
+        "external_id": external_id,
+        "title": base["title"].replace(base["external_id"], external_id),
+        "url": f"https://{target.domain}/notice/{external_id}",
+        "publisher": base["publisher"],
+        "region": base["region"],
+        "category": base["category"],
+        "industry": base["industry"],
+        "published_at": base["published_at"],
+        "qualification": base["qualification"],
+        "body_kind": "html",
+        "raw_html": html,
+        "clean_text": clean,
+        "byte_size": len(html.encode("utf-8")),
+        "content_hash": hashlib.sha256(clean.encode("utf-8")).hexdigest(),
+        "status": base["status"],
+        "merge_base_index": spec.base_index,
+        "mirror_kind": spec.kind,
+        "note": spec.note,
+    }
+
+
+def mirror_plan_active(ordinal: int) -> list[MirrorSpec]:
+    """返回截至第 ordinal 批应当出现的副本定义（不含已被撤下的转发副本）。"""
+    return [spec for spec in MIRROR_PLAN if spec.appear_phase <= ordinal]
+
+
+def mirror_withdrawn_keys(ordinal: int) -> set[str]:
+    return {
+        spec.key
+        for spec in MIRROR_PLAN
+        if spec.withdrawn_phase is not None and spec.withdrawn_phase <= ordinal
+    }
+
+
+def project_withdrawn_indexes(ordinal: int) -> set[int]:
+    return {index for index, phase in PROJECT_WITHDRAW_PHASE.items() if phase <= ordinal}
+
+
+def failing_mirror_keys(ordinal: int) -> set[str]:
+    """第 ordinal 批模拟抓取失败的副本（仅第一批失败，后续恢复）。"""
+    if ordinal == 1:
+        return set(TRANSIENT_FAIL_KEYS)
+    return set()
+
+
+# ----------------------------------------------------------------------------
+# 归并键：同一项目跨来源归并的自然键
+# ----------------------------------------------------------------------------
+
+def normalize_project_name(name: str) -> str:
+    """归一化项目名称：去空白/标点，保留核心工程词，用于跨来源匹配。"""
+    import re
+
+    cleaned = re.sub(r"[\s（）\(\)【】\[\]·、，,。.：:；;－\-—_《》<>\"'“”‘’]", "", name or "")
+    return cleaned.strip()
+
+
+def merge_key_for(index: int, publisher: str | None = None) -> str:
+    """基线公告 / 其全部跨来源副本共用的归并键。
+
+    按项目序号 index 生成稳定唯一键（同一项目的转发/更正/撤回副本均指向同一 index），
+    不依赖可能重复的名称/招标人文本。
+    """
+    return hashlib.sha256(f"bidsift-project:{int(index)}".encode("utf-8")).hexdigest()[:32]
+
+
+def merge_key_for_payload(payload: dict) -> str:
+    """任意公告 payload 的归并键：mirror 走 base_index，基线公告走自身 index。"""
+    if payload.get("merge_base_index") is not None:
+        return merge_key_for(payload["merge_base_index"])
+    return merge_key_for(payload["index"])

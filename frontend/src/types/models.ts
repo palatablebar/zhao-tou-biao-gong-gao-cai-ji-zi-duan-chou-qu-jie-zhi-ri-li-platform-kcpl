@@ -14,13 +14,24 @@ export interface UserInfo {
 
 export type SiteStatus = 'active' | 'degraded' | 'paused';
 export type RunStatus = 'running' | 'success' | 'partial' | 'failed';
-export type NoticeStatus = 'new' | 'tracking' | 'reviewing' | 'archived';
+export type NoticeStatus = 'new' | 'tracking' | 'reviewing' | 'archived' | 'superseded' | 'withdrawn';
 export type FieldKey = 'project_name' | 'budget_amount' | 'deadline' | 'opening_place';
 export type FieldStatus = 'extracted' | 'verified' | 'corrected' | 'rejected';
 export type RiskLevel = 'must_act' | 'watch' | 'skip' | 'unknown';
 export type DeadlineKind = 'enroll' | 'bid_open' | 'qa';
 export type TemplateStatus = 'draft' | 'active' | 'archived';
 export type QualLevel = 'none' | 'grade_2' | 'grade_1' | 'grade_special';
+export type VersionStatus = 'active' | 'superseded' | 'withdrawn';
+export type ProjectStatus = 'active' | 'withdrawn';
+export type ProjectSourceStatus = 'active' | 'superseded' | 'withdrawn';
+export type DecisionStatus = 'auto' | 'manual' | 'conflict' | 'pending';
+export type DecisionBasis =
+  | 'single_source'
+  | 'highest_confidence'
+  | 'latest_published'
+  | 'manual_confirm'
+  | 'manual_override'
+  | 'none';
 
 export interface Site {
   id: number;
@@ -90,6 +101,12 @@ export interface CrawlRun {
   error_count: number;
   field_count: number;
   low_confidence_count: number;
+  merged_count?: number;
+  conflict_count?: number;
+  withdrawn_count?: number;
+  corrected_count?: number;
+  crawl_ordinal?: number;
+  phase?: string | null;
   duration_ms: number;
   note?: string | null;
   started_at: string;
@@ -106,7 +123,24 @@ export interface CrawlResult {
     low_confidence_count: number;
     notice_count: number;
   };
-  risk: { as_of: string; total: number; counts: Record<RiskLevel, number> };
+  merge?: {
+    projects_created: number;
+    sources_created: number;
+    sources_updated: number;
+    decisions_auto: number;
+    decisions_conflict: number;
+    decisions_pending: number;
+    manual_preserved: number;
+    withdrawn: number;
+    corrected: number;
+  };
+  risk: {
+    as_of: string;
+    total: number;
+    active_total?: number;
+    inactive_total?: number;
+    counts: Record<RiskLevel, number>;
+  };
 }
 
 export interface FieldItem {
@@ -169,6 +203,24 @@ export interface NoticeAggregate {
   risk: RiskInfo | null;
 }
 
+export interface NoticeProjectContext {
+  project_id: number;
+  project_status: ProjectStatus;
+  source_count: number;
+  conflict_count: number;
+  pending_field_count: number;
+}
+
+export interface NoticeVersion {
+  version_no: number;
+  status: VersionStatus;
+  content_hash: string;
+  change_note?: string | null;
+  byte_size?: number;
+  seen_at?: string | null;
+  withdrawn_at?: string | null;
+}
+
 export interface NoticeItem {
   id: number;
   external_id: string;
@@ -186,6 +238,9 @@ export interface NoticeItem {
   published_at: string;
   byte_size: number;
   crawl_run_id?: number | null;
+  current_version_no?: number;
+  withdrawn_at?: string | null;
+  project?: NoticeProjectContext | null;
   aggregate: NoticeAggregate;
 }
 
@@ -199,6 +254,8 @@ export interface DeadlineItem {
   kind: DeadlineKind;
   event_at?: string | null;
   precision: string;
+  is_active?: boolean;
+  inactive_reason?: string | null;
   risk_level: RiskLevel;
   risk_score?: number | null;
   deadline_pressure?: number | null;
@@ -211,9 +268,150 @@ export interface DeadlineItem {
 export interface NoticeDetail extends NoticeItem {
   fields: FieldItem[];
   deadlines: DeadlineItem[];
+  versions: NoticeVersion[];
   body_lines: BodyLine[];
   site: { id: number | null; name: string; domain: string; region: string };
   low_confidence_count: number;
+}
+
+export interface DecisionCandidate {
+  notice_id: number;
+  site_id: number;
+  site_name: string;
+  external_id: string;
+  value_text?: string | null;
+  amount_yuan?: number | null;
+  event_at?: string | null;
+  unit?: string | null;
+  precision: string;
+  is_estimated: boolean;
+  confidence: number;
+  field_status: FieldStatus;
+  published_at: string;
+  notice_status: NoticeStatus;
+}
+
+export interface ProjectDecision {
+  id: number;
+  project_id: number;
+  field_key: FieldKey;
+  label: string;
+  status: DecisionStatus;
+  status_label: string;
+  basis: DecisionBasis;
+  basis_label: string;
+  value_text?: string | null;
+  unit?: string | null;
+  amount_yuan?: number | null;
+  amount_wan?: number | null;
+  event_at?: string | null;
+  precision: string;
+  is_estimated: boolean;
+  confidence: number;
+  source_notice_id?: number | null;
+  source_site_id?: number | null;
+  reason: string;
+  reviewer?: string | null;
+  reviewed_at?: string | null;
+  candidates: DecisionCandidate[];
+  conflict: boolean;
+  pending: boolean;
+}
+
+export interface ProjectSourceVersion {
+  version_no: number;
+  status: VersionStatus;
+  content_hash: string;
+  change_note?: string | null;
+  seen_at?: string | null;
+  withdrawn_at?: string | null;
+}
+
+export interface ProjectSourceItem {
+  id: number;
+  site_id: number;
+  site_name: string;
+  site_domain: string;
+  region: string;
+  notice_id: number;
+  external_id: string;
+  status: ProjectSourceStatus;
+  current_version_no: number;
+  content_hash: string;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  withdrawn_at?: string | null;
+  notice_status: NoticeStatus;
+  notice_title: string;
+  url: string;
+  versions: ProjectSourceVersion[];
+}
+
+export interface ProjectDeadline {
+  id: number;
+  kind: DeadlineKind;
+  event_at?: string | null;
+  risk_level: RiskLevel;
+  risk_score?: number | null;
+  is_active: boolean;
+  inactive_reason?: string | null;
+  note?: string | null;
+}
+
+export interface ProjectSummary {
+  id: number;
+  merge_key: string;
+  display_name: string;
+  publisher: string;
+  region: string;
+  category: string;
+  industry: string;
+  qualification: QualLevel;
+  status: ProjectStatus;
+  status_label: string;
+  primary_notice_id?: number | null;
+  active_source_count: number;
+  conflict_count: number;
+  pending_field_count: number;
+  withdrawn_at?: string | null;
+  updated_at?: string | null;
+  last_seen_at?: string | null;
+  risk_level?: RiskLevel | null;
+  risk_score?: number | null;
+  deadline_event_active: boolean;
+  decision_states: Record<string, DecisionStatus>;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  sources: ProjectSourceItem[];
+  decisions: ProjectDecision[];
+  deadlines: ProjectDeadline[];
+}
+
+export interface ProjectList {
+  items: ProjectSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ProjectStats {
+  project_total: number;
+  active_total: number;
+  withdrawn_total: number;
+  conflict_project_total: number;
+  conflict_field_total: number;
+  pending_field_total: number;
+  manual_field_total: number;
+  active_source_total: number;
+}
+
+export interface ProjectFilterOptions {
+  regions: string[];
+  categories: string[];
+  statuses: ProjectStatus[];
+  decision_status: Record<string, string>;
+  basis: Record<string, string>;
 }
 
 export interface NoticeList {
@@ -227,9 +425,12 @@ export interface NoticeList {
 export interface CalendarEvent {
   id: number;
   notice_id: number;
+  project_id?: number | null;
   kind: DeadlineKind;
   event_at?: string | null;
   precision: string;
+  is_active: boolean;
+  inactive_reason?: string | null;
   work_hours_remaining?: number | null;
   deadline_pressure?: number | null;
   qualify_gap?: number | null;
@@ -303,6 +504,7 @@ export interface Overview {
   site_count: number;
   run_count: number;
   event_count: number;
+  inactive_event_count?: number;
   field_total: number;
   field_low_confidence: number;
   review_pending: number;
@@ -320,6 +522,10 @@ export interface Overview {
     duplicate_count: number;
     field_count: number;
     low_confidence_count: number;
+    merged_count?: number;
+    conflict_count?: number;
+    withdrawn_count?: number;
+    crawl_ordinal?: number;
     duration_ms: number;
     finished_at?: string | null;
   } | null;

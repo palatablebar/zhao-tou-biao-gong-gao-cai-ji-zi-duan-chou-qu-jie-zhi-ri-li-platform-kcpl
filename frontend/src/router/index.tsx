@@ -4,6 +4,8 @@ import DeadlineCalendar from '../pages/DeadlineCalendar';
 import Login from '../pages/Login';
 import NoticeBoard from '../pages/NoticeBoard';
 import NoticeDetail from '../pages/NoticeDetail';
+import ProjectBoard from '../pages/ProjectBoard';
+import ProjectDetailPage from '../pages/ProjectDetail';
 import ReviewQueue from '../pages/ReviewQueue';
 import SiteTemplates from '../pages/SiteTemplates';
 import { RequireAuth, RequirePermission } from './guards';
@@ -25,6 +27,8 @@ export default function AppRouter() {
       <Route path="/" element={<Navigate to="/notices" replace />} />
       <Route path="/notices" element={<Protected permission="notice:read"><NoticeBoard /></Protected>} />
       <Route path="/notices/:noticeId" element={<Protected permission="notice:read"><NoticeDetail /></Protected>} />
+      <Route path="/projects" element={<Protected permission="project:read"><ProjectBoard /></Protected>} />
+      <Route path="/projects/:projectId" element={<Protected permission="project:read"><ProjectDetailPage /></Protected>} />
       <Route path="/calendar" element={<Protected permission="deadline:read"><DeadlineCalendar /></Protected>} />
       <Route path="/sites" element={<Protected permission="site:read"><SiteTemplates /></Protected>} />
       <Route path="/review" element={<Protected permission="review:read"><ReviewQueue /></Protected>} />

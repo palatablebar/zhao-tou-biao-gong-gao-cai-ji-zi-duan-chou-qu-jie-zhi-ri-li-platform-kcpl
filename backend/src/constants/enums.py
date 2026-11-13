@@ -28,6 +28,51 @@ class NoticeStatus(str, Enum):
     TRACKING = "tracking"
     REVIEWING = "reviewing"
     ARCHIVED = "archived"
+    SUPERSEDED = "superseded"
+    WITHDRAWN = "withdrawn"
+
+
+class VersionStatus(str, Enum):
+    """同一来源公告正文的版本生命周期。"""
+
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    WITHDRAWN = "withdrawn"
+
+
+class ProjectStatus(str, Enum):
+    """跨来源归并后的项目状态。"""
+
+    ACTIVE = "active"
+    WITHDRAWN = "withdrawn"
+
+
+class SourceStatus(str, Enum):
+    """项目在单个来源上的状态。"""
+
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    WITHDRAWN = "withdrawn"
+
+
+class DecisionStatus(str, Enum):
+    """项目字段裁决状态。"""
+
+    AUTO = "auto"          # 系统按裁决规则自动选定
+    MANUAL = "manual"      # 人工确认/修正，采集不得覆盖
+    CONFLICT = "conflict"  # 多来源取值冲突，待人工裁定
+    PENDING = "pending"    # 各来源均缺失，待补全
+
+
+class DecisionBasis(str, Enum):
+    """裁决依据（自动裁决时写明规则）。"""
+
+    SINGLE_SOURCE = "single_source"          # 仅有一个来源提供值
+    HIGHEST_CONFIDENCE = "highest_confidence"  # 多来源取置信度最高
+    LATEST_PUBLISHED = "latest_published"    # 置信度相同取发布时间最新
+    MANUAL_CONFIRM = "manual_confirm"        # 人工确认
+    MANUAL_OVERRIDE = "manual_override"      # 人工修正
+    NONE = "none"                            # 无可用值
 
 
 class FieldKey(str, Enum):

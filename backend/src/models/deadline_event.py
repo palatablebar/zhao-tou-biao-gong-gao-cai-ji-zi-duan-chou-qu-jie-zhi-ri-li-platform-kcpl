@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.models import Base
@@ -17,9 +17,12 @@ class DeadlineEvent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     notice_id: Mapped[int] = mapped_column(ForeignKey("notices.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     kind: Mapped[str] = mapped_column(String(20), default="enroll", index=True)
     event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     precision: Mapped[str] = mapped_column(String(20), default="absolute")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    inactive_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     work_hours_remaining: Mapped[float | None] = mapped_column(Float, nullable=True)
     deadline_pressure: Mapped[float | None] = mapped_column(Float, nullable=True)
     qualify_gap: Mapped[float | None] = mapped_column(Float, nullable=True)

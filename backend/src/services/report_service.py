@@ -41,10 +41,17 @@ def overview(db: Session) -> dict:
     notice_count = db.scalar(select(func.count()).select_from(Notice)) or 0
     site_count = db.scalar(select(func.count()).select_from(Site)) or 0
     run_count = db.scalar(select(func.count()).select_from(CrawlRun)) or 0
-    event_count = db.scalar(select(func.count()).select_from(DeadlineEvent)) or 0
+    event_count = db.scalar(
+        select(func.count()).select_from(DeadlineEvent).where(DeadlineEvent.is_active.is_(True))
+    ) or 0
+    inactive_event_count = db.scalar(
+        select(func.count()).select_from(DeadlineEvent).where(DeadlineEvent.is_active.is_(False))
+    ) or 0
     fields = field_service.stats(db)
     risk_rows = db.execute(
-        select(DeadlineEvent.risk_level, func.count()).group_by(DeadlineEvent.risk_level)
+        select(DeadlineEvent.risk_level, func.count())
+        .where(DeadlineEvent.is_active.is_(True))
+        .group_by(DeadlineEvent.risk_level)
     ).all()
     risk_counts = {level.value: 0 for level in RiskLevel}
     for level, count in risk_rows:
@@ -61,6 +68,7 @@ def overview(db: Session) -> dict:
         "site_count": site_count,
         "run_count": run_count,
         "event_count": event_count,
+        "inactive_event_count": inactive_event_count,
         "field_total": fields["total"],
         "field_low_confidence": fields["low_confidence"],
         "review_pending": fields["pending"],
@@ -80,6 +88,10 @@ def overview(db: Session) -> dict:
             "duplicate_count": latest_run.duplicate_count,
             "field_count": latest_run.field_count,
             "low_confidence_count": latest_run.low_confidence_count,
+            "merged_count": latest_run.merged_count,
+            "conflict_count": latest_run.conflict_count,
+            "withdrawn_count": latest_run.withdrawn_count,
+            "crawl_ordinal": latest_run.crawl_ordinal,
             "duration_ms": latest_run.duration_ms,
             "finished_at": iso_local(latest_run.finished_at),
         },

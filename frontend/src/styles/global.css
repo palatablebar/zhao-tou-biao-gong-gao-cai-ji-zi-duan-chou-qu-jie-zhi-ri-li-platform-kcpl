@@ -594,6 +594,24 @@ table.ledger td.deadline-cell { white-space: nowrap; font-size: 0.74rem; }
   .calendar-layout { grid-template-columns: minmax(0, 1fr); }
   .site-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+/* ---- 项目归并：版本链 / 来源候选 ---- */
+.version-chain { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.4rem; }
+.version-chip {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font-family: var(--font-mono); font-size: 0.66rem;
+  padding: 0.12rem 0.45rem; border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--paper-2); color: var(--ink-soft);
+}
+.version-chip.version-active { border-color: var(--brass-line); background: var(--brass-soft); color: var(--ink-deep); }
+.version-chip.version-superseded { opacity: 0.72; }
+.version-chip.version-withdrawn { border-style: dashed; color: var(--seal); background: var(--seal-soft); }
+.version-chip em { font-style: normal; color: var(--ink-faint); }
+.candidate-table { margin-top: 0.5rem; }
+.candidate-table th { font-size: 0.62rem; letter-spacing: 0.06em; }
+.conf-low { color: var(--seal); font-weight: 600; }
+.field .correct-form { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+.field .correct-form .input { flex: 1 1 280px; }
+
 @media (max-width: 860px) {
   .login { grid-template-columns: minmax(0, 1fr); }
   .login-brand { padding: 2rem 1.4rem; }

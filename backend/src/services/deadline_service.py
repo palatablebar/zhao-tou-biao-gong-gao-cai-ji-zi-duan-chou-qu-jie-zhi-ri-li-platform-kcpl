@@ -24,6 +24,8 @@ from src.constants.fieldspec import (
 )
 from src.models.deadline_event import DeadlineEvent
 from src.models.notice import Notice
+from src.models.project import Project
+from src.models.project_source import ProjectSource
 from src.services import source_catalog
 from src.utils.errors import AppError
 from src.utils.textutil import comma_number
@@ -56,6 +58,11 @@ def score_event(event: DeadlineEvent, notice: Notice, as_of: datetime) -> None:
     gap = QUALIFY_GAP.get(notice.qualification, 0.0)
     event.qualify_gap = round(gap, 3)
     event.computed_at = as_of
+    # 已停用事件（项目撤回/来源撤下）：不参与风险分档，保留历史评分快照
+    if not event.is_active:
+        event.risk_level = RiskLevel.SKIP.value
+        event.note = event.inactive_reason or "项目已撤回/来源已撤下，已从必投名单移除"
+        return
     if event.event_at is None:
         event.work_hours_remaining = None
         event.deadline_pressure = None
@@ -92,11 +99,14 @@ def recompute_events(db: Session, as_of: datetime | None = None) -> dict:
         if notice is None:
             continue
         score_event(event, notice, as_of)
-        counts[event.risk_level] = counts.get(event.risk_level, 0) + 1
+        if event.is_active:
+            counts[event.risk_level] = counts.get(event.risk_level, 0) + 1
     db.flush()
     return {
         "as_of": iso_local(as_of),
         "total": len(events),
+        "active_total": sum(1 for event in events if event.is_active),
+        "inactive_total": sum(1 for event in events if not event.is_active),
         "counts": counts,
         "formula": FORMULA,
     }
@@ -177,13 +187,59 @@ def sync_from_field(db: Session, field) -> DeadlineEvent | None:
     return event
 
 
+def _project_for_notice(db: Session, notice_id: int) -> Project | None:
+    source = db.scalar(select(ProjectSource).where(ProjectSource.notice_id == notice_id))
+    if source is None:
+        return None
+    return db.get(Project, source.project_id)
+
+
+def sync_project_events(db: Session) -> dict:
+    """把日历事件与项目归并状态对齐：
+    - 关联 project_id；
+    - 项目撤回或事件所属公告被撤下 → 事件停用（保留行，移出必投名单）；
+    - 项目恢复有效 → 事件重新激活。
+    幂等：事件自然键 (notice_id, kind)，不新增重复事件。
+    """
+    from src.constants.enums import ProjectStatus as _PS
+
+    events = db.scalars(select(DeadlineEvent)).all()
+    activated = deactivated = 0
+    for event in events:
+        notice = db.get(Notice, event.notice_id)
+        project = _project_for_notice(db, event.notice_id) if notice else None
+        if project is not None:
+            event.project_id = project.id
+        should_active = True
+        reason = None
+        if notice is not None and notice.status == "withdrawn":
+            should_active = False
+            reason = f"来源公告 {notice.external_id} 已撤下，移出必投名单"
+        elif project is not None and project.status == _PS.WITHDRAWN.value:
+            should_active = False
+            reason = "项目全部来源均已撤回，移出必投名单"
+        if should_active and not event.is_active:
+            event.is_active = True
+            event.inactive_reason = None
+            activated += 1
+        elif not should_active and event.is_active:
+            event.is_active = False
+            event.inactive_reason = reason
+            deactivated += 1
+    db.flush()
+    return {"activated": activated, "deactivated": deactivated, "total": len(events)}
+
+
 def serialize_event(event: DeadlineEvent, notice: Notice) -> dict:
     return {
         "id": event.id,
         "notice_id": notice.id,
+        "project_id": event.project_id,
         "kind": event.kind,
         "event_at": iso_local(event.event_at),
         "precision": event.precision,
+        "is_active": event.is_active,
+        "inactive_reason": event.inactive_reason,
         "work_hours_remaining": event.work_hours_remaining,
         "deadline_pressure": event.deadline_pressure,
         "qualify_gap": event.qualify_gap,
@@ -207,13 +263,15 @@ def serialize_event(event: DeadlineEvent, notice: Notice) -> dict:
     }
 
 
-def list_events(db: Session, as_of: datetime | None = None, risk: str | None = None) -> list[dict]:
+def list_events(db: Session, as_of: datetime | None = None, risk: str | None = None, include_inactive: bool = False) -> list[dict]:
     as_of = as_of or demo_as_of()
     rows = db.execute(
         select(DeadlineEvent, Notice).join(Notice, Notice.id == DeadlineEvent.notice_id)
     ).all()
     items: list[dict] = []
     for event, notice in rows:
+        if not include_inactive and not event.is_active:
+            continue
         if risk and event.risk_level != risk:
             continue
         payload = serialize_event(event, notice)

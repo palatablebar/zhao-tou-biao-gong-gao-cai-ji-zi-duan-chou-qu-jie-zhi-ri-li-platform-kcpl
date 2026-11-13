@@ -30,12 +30,28 @@
 
 ## 3. 主要功能
 
-1. **公告登记簿**：6 采源筛选、区域/分类筛选、低置信标记、风险章、分页；一键「跑采集批次」。
-2. **公告卷宗详情**：清洗后正文逐行展示并标出锚点命中行；右侧 4 个字段的「原文 → 归一值 → 三段分母 → 置信度」核对卡，支持人工修正 / 通过 / 驳回。
-3. **采源与模板治理**：站点列表（频率、限流、状态、低置信数）、模板版本表、两个版本之间的锚点/正则差异对比、草稿发布。
-4. **截止日历**：周视图 7 列排期 + 本周必投名单 + 风险分布 + 算法口径说明；按基准时刻重算。
-5. **复核队列 / 漏抽报表**：低置信字段按分数升序排队；站点 × 字段的缺失率与平均置信度矩阵。
-6. **审计日志**（admin）：登录、采集、复核、导出、模板发布全部留痕。
+1. **公告登记簿**：6 采源筛选、区域/分类筛选、低置信标记、风险章、分页；一键「跑采集批次」；展示跨来源归并的来源数、来源冲突与撤回标记。
+2. **项目归并（跨来源）**：同一招标项目在多个交易中心的转发/更正/撤回副本按 `merge_key` 归并为一条项目，
+   保留每个来源的当前快照与正文版本链（active/superseded/withdrawn）；项目详情给出各来源、字段裁决依据与待裁定字段。
+3. **字段裁决与人工确认**：每个项目的 4 个字段按「唯一来源 → 置信度最高 → 发布时间最新」自动裁决，
+   记录依据来源与全部候选；来源取值不一致标记 `conflict`、全缺失标记 `pending`；
+   人工确认/修正后置 `manual`，后续采集只更新候选、**绝不覆盖**人工值，并可撤销恢复自动裁决。
+4. **更正与撤回**：来源发更正公告时旧正文入版本链（不静默覆盖）；来源撤下只标记 `withdrawn` 保留历史，
+   项目全部来源撤下即整体撤回，截止日历事件停用并**自动移出本周必投名单**。
+5. **公告卷宗详情**：清洗后正文逐行展示并标出锚点命中行；正文版本链、项目归并入口；右侧 4 个字段的
+   「原文 → 归一值 → 三段分母 → 置信度」核对卡，支持人工修正 / 通过 / 驳回。
+6. **采源与模板治理**：站点列表（频率、限流、状态、低置信数）、模板版本表、两个版本之间的锚点/正则差异对比、草稿发布。
+7. **截止日历**：周视图 7 列排期 + 本周必投名单（不含撤回项目）+ 风险分布 + 算法口径说明；按基准时刻重算。
+8. **复核队列 / 漏抽报表**：低置信字段按分数升序排队；站点 × 字段的缺失率与平均置信度矩阵。
+9. **审计日志**（admin）：登录、采集、复核、项目裁定、导出、模板发布全部留痕。
+
+### 采集幂等与失败重试
+
+- 全部实体按自然键 upsert：`notices(site_id,external_id)`、`notice_versions(notice_id,version_no)`、
+  `projects.merge_key`、`project_sources(project_id,site_id)`、`project_field_decisions(project_id,field_key)`、
+  `deadline_events(notice_id,kind)`；重复执行采集不新增项目、来源、裁决或日历事件。
+- 采集批次带递增序号 `crawl_ordinal`（失败批次不推进），跨来源剧情随序号推进；
+  单条/单站抓取失败只累计 `error_count`，后续批次重试即可补齐缺失副本。
 
 ## 4. 两个真算算法
 
@@ -78,7 +94,7 @@ MySQL 映射 `127.0.0.1:17740`。
 `SEED_DEMO=true` 时 backend 启动会自动执行一次幂等 seed，并在日志打印：
 
 ```
-SEED_SUMMARY brand=bidsift sites=6 notices=120 fields=480 deadlines=18 users=3
+SEED_SUMMARY brand=bidsift sites=6 notices=120 fields=480 deadlines=18 projects=120 users=3
 ```
 
 ## 6. 本地开发
@@ -116,9 +132,10 @@ gb-567/
 │   └── src/
 │       ├── config/   # settings / database / celery_app / app
 │       ├── constants/# enums / roles / error_codes / limits / fieldspec
-│       ├── models/   # 6 实体 + User + AuditLog
+│       ├── models/   # 实体：User/AuditLog/Site/Template/CrawlRun/Notice/NoticeVersion
+│       │             #       Project/ProjectSource/ProjectFieldDecision/ExtractedField/DeadlineEvent
 │       ├── schemas/  # 请求体校验
-│       ├── services/ # 业务 + 两个算法 + source_catalog
+│       ├── services/ # 业务 + 两个算法 + source_catalog + merge_service（归并裁决）+ project_service
 │       ├── controllers/
 │       ├── routes/   # /api/...
 │       ├── middlewares/ # JWT / RBAC / 审计 / 限流 / 全局错误
@@ -148,7 +165,9 @@ gb-567/
 | `Role` | `backend/src/constants/enums.py`、`roles.py` | `frontend/src/types/models.ts`、`constants/roles.ts` |
 | `SiteStatus` | `enums.py` | `types/models.ts`、`constants/enums.ts`(`SITE_STATUS_LABEL`) |
 | `RunStatus` | `enums.py` | 同上（`RUN_STATUS_LABEL`） |
-| `NoticeStatus` | `enums.py` | 同上（`NOTICE_STATUS_LABEL`） |
+| `NoticeStatus`/`VersionStatus` | `enums.py` | 同上（`NOTICE_STATUS_LABEL`/`VERSION_STATUS_LABEL`） |
+| `ProjectStatus`/`SourceStatus` | `enums.py` | 同上（`PROJECT_STATUS_LABEL`） |
+| `DecisionStatus`/`DecisionBasis` | `enums.py` | 同上（`DECISION_STATUS_LABEL`/`DECISION_BASIS_LABEL`） |
 | `FieldKey` / `FieldStatus` | `enums.py` / `fieldspec.py` | `types/models.ts`、`constants/enums.ts` |
 | `DeadlineKind` / `RiskLevel` | `enums.py` / `fieldspec.py` | 同上（`DEADLINE_KIND_LABEL` / `RISK_LABEL`） |
 | `QualLevel` | `enums.py` + `fieldspec.QUALIFY_GAP` | `constants/enums.ts`(`QUAL_LABEL`) |
@@ -172,8 +191,10 @@ gb-567/
 
 ## 13. 验收口径（seed 后）
 
-- 6 采源 / 3 个模板版本 / 120 条公告（2 条为「PDF 转 HTML」附件正文）/ 480 个抽取字段（其中 37 个低置信）/
-  18 个截止事件（必投 8 / 观察 5 / 放弃 4 / 待补 1，按演示基准时刻计算）。
+- 6 采源 / 3 个模板版本 / 120 条公告（2 条为「PDF 转 HTML」附件正文）/ 120 个归并项目（每项目 1 来源）/
+  480 个抽取字段（其中 37 个低置信）/ 18 个截止事件（必投 8 / 观察 5 / 放弃 4 / 待补 1，按演示基准时刻计算）。
+- 连续跑采集批次后：跨来源副本归并不新增项目与日历事件；更正产生版本链、撤回项目事件停用且退出必投名单；
+  人工裁定字段在后续批次保持 `manual` 不被覆盖。
 
 ## 14. License
 

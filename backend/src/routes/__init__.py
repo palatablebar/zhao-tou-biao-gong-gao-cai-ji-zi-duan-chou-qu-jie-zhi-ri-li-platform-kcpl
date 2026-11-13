@@ -7,6 +7,7 @@ from src.routes.deadlines import router as deadlines_router
 from src.routes.fields import router as fields_router
 from src.routes.health import router as health_router
 from src.routes.notices import router as notices_router
+from src.routes.projects import router as projects_router
 from src.routes.reports import router as reports_router
 from src.routes.sites import router as sites_router
 from src.routes.templates import router as templates_router
@@ -18,6 +19,7 @@ api_router.include_router(sites_router)
 api_router.include_router(templates_router)
 api_router.include_router(crawls_router)
 api_router.include_router(notices_router)
+api_router.include_router(projects_router)
 api_router.include_router(fields_router)
 api_router.include_router(deadlines_router)
 api_router.include_router(reports_router)

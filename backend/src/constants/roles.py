@@ -23,6 +23,8 @@ PERMISSIONS: dict[str, set[str]] = {
         "review:read",
         "deadline:read",
         "deadline:recompute",
+        "project:read",
+        "project:adjudicate",
         "export:run",
         "audit:read",
     },
@@ -37,6 +39,8 @@ PERMISSIONS: dict[str, set[str]] = {
         "review:read",
         "deadline:read",
         "deadline:recompute",
+        "project:read",
+        "project:adjudicate",
         "export:run",
     },
     Role.CLIENT.value: {
@@ -44,6 +48,7 @@ PERMISSIONS: dict[str, set[str]] = {
         "site:read",
         "template:read",
         "deadline:read",
+        "project:read",
         "export:run",
     },
 }
@@ -54,6 +59,7 @@ TEMPLATE_WRITE_ROLES = (Role.ADMIN.value, Role.ANALYST.value)
 TEMPLATE_PUBLISH_ROLES = (Role.ADMIN.value,)
 CRAWL_EXECUTE_ROLES = (Role.ADMIN.value, Role.ANALYST.value)
 FIELD_REVIEW_ROLES = (Role.ADMIN.value, Role.ANALYST.value)
+PROJECT_ADJUDICATE_ROLES = (Role.ADMIN.value, Role.ANALYST.value)
 REVIEW_READ_ROLES = (Role.ADMIN.value, Role.ANALYST.value)
 DEADLINE_RECOMPUTE_ROLES = (Role.ADMIN.value, Role.ANALYST.value)
 AUDIT_READ_ROLES = (Role.ADMIN.value,)

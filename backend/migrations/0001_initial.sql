@@ -74,11 +74,18 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
   error_count INT NOT NULL DEFAULT 0,
   field_count INT NOT NULL DEFAULT 0,
   low_confidence_count INT NOT NULL DEFAULT 0,
+  merged_count INT NOT NULL DEFAULT 0,
+  conflict_count INT NOT NULL DEFAULT 0,
+  withdrawn_count INT NOT NULL DEFAULT 0,
+  corrected_count INT NOT NULL DEFAULT 0,
+  crawl_ordinal INT NOT NULL DEFAULT 0,
+  phase VARCHAR(40) NULL,
   duration_ms INT NOT NULL DEFAULT 0,
   note VARCHAR(255) NULL,
   started_at DATETIME NOT NULL,
   finished_at DATETIME NULL,
-  KEY idx_runs_status (status)
+  KEY idx_runs_status (status),
+  KEY idx_runs_ordinal (crawl_ordinal)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS notices (
@@ -100,15 +107,120 @@ CREATE TABLE IF NOT EXISTS notices (
   content_hash VARCHAR(64) NOT NULL,
   byte_size INT NOT NULL DEFAULT 0,
   status VARCHAR(20) NOT NULL DEFAULT 'new',
+  merge_key VARCHAR(64) NULL,
+  current_version_no INT NOT NULL DEFAULT 1,
+  first_crawl_run_id INT NULL,
+  withdrawn_at DATETIME NULL,
   seed_key VARCHAR(160) NULL UNIQUE,
   created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
   UNIQUE KEY uq_notice_external (site_id, external_id),
   KEY idx_notices_region (region),
   KEY idx_notices_category (category),
   KEY idx_notices_published (published_at),
   KEY idx_notices_hash (content_hash),
+  KEY idx_notices_merge_key (merge_key),
+  KEY idx_notices_status (status),
   CONSTRAINT fk_notice_site FOREIGN KEY (site_id) REFERENCES sites (id),
   CONSTRAINT fk_notice_run FOREIGN KEY (crawl_run_id) REFERENCES crawl_runs (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 同一来源公告的正文版本链：更正 → 旧版 superseded；撤下 → withdrawn（历史保留）
+CREATE TABLE IF NOT EXISTS notice_versions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  notice_id INT NOT NULL,
+  version_no INT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  content_hash VARCHAR(64) NOT NULL,
+  raw_html LONGTEXT NOT NULL,
+  clean_text LONGTEXT NOT NULL,
+  byte_size INT NOT NULL DEFAULT 0,
+  change_note VARCHAR(255) NULL,
+  crawl_run_id INT NULL,
+  seen_at DATETIME NOT NULL,
+  withdrawn_at DATETIME NULL,
+  created_at DATETIME NOT NULL,
+  UNIQUE KEY uq_notice_version_no (notice_id, version_no),
+  KEY idx_version_status (status),
+  KEY idx_version_notice (notice_id),
+  CONSTRAINT fk_version_notice FOREIGN KEY (notice_id) REFERENCES notices (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 跨来源归并后的项目主体
+CREATE TABLE IF NOT EXISTS projects (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  merge_key VARCHAR(160) NOT NULL,
+  display_name VARCHAR(255) NOT NULL,
+  publisher VARCHAR(160) NOT NULL DEFAULT '',
+  region VARCHAR(20) NOT NULL DEFAULT '',
+  category VARCHAR(30) NOT NULL DEFAULT '',
+  industry VARCHAR(20) NOT NULL DEFAULT '',
+  qualification VARCHAR(20) NOT NULL DEFAULT 'none',
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  primary_notice_id INT NULL,
+  conflict_count INT NOT NULL DEFAULT 0,
+  pending_field_count INT NOT NULL DEFAULT 0,
+  withdrawn_at DATETIME NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  last_seen_at DATETIME NULL,
+  note TEXT NULL,
+  UNIQUE KEY uq_project_merge_key (merge_key),
+  KEY idx_project_status (status),
+  KEY idx_project_region (region),
+  KEY idx_project_category (category)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 项目在单个采源上的登记（项目 × 来源唯一）
+CREATE TABLE IF NOT EXISTS project_sources (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  project_id INT NOT NULL,
+  site_id INT NOT NULL,
+  notice_id INT NOT NULL,
+  external_id VARCHAR(80) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  current_version_no INT NOT NULL DEFAULT 1,
+  content_hash VARCHAR(64) NOT NULL DEFAULT '',
+  first_seen_run_id INT NULL,
+  last_seen_run_id INT NULL,
+  first_seen_at DATETIME NOT NULL,
+  last_seen_at DATETIME NOT NULL,
+  withdrawn_at DATETIME NULL,
+  UNIQUE KEY uq_project_source_site (project_id, site_id),
+  UNIQUE KEY uq_project_source_notice (notice_id),
+  KEY idx_psource_project (project_id),
+  KEY idx_psource_status (status),
+  CONSTRAINT fk_psource_project FOREIGN KEY (project_id) REFERENCES projects (id),
+  CONSTRAINT fk_psource_site FOREIGN KEY (site_id) REFERENCES sites (id),
+  CONSTRAINT fk_psource_notice FOREIGN KEY (notice_id) REFERENCES notices (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 项目级字段裁决（含裁决依据与各来源候选，人工确认不被采集覆盖）
+CREATE TABLE IF NOT EXISTS project_field_decisions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  project_id INT NOT NULL,
+  field_key VARCHAR(30) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  basis VARCHAR(30) NOT NULL DEFAULT 'none',
+  value_text VARCHAR(255) NULL,
+  unit VARCHAR(20) NULL,
+  amount_yuan DOUBLE NULL,
+  event_at DATETIME NULL,
+  precision VARCHAR(20) NOT NULL DEFAULT 'missing',
+  is_estimated TINYINT(1) NOT NULL DEFAULT 0,
+  confidence DOUBLE NOT NULL DEFAULT 0,
+  source_notice_id INT NULL,
+  source_site_id INT NULL,
+  reason VARCHAR(400) NOT NULL DEFAULT '',
+  candidates JSON NOT NULL,
+  reviewer VARCHAR(160) NULL,
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  UNIQUE KEY uq_project_field (project_id, field_key),
+  KEY idx_pfd_status (status),
+  KEY idx_pfd_field (field_key),
+  CONSTRAINT fk_pfd_project FOREIGN KEY (project_id) REFERENCES projects (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS extracted_fields (
@@ -140,9 +252,12 @@ CREATE TABLE IF NOT EXISTS extracted_fields (
 CREATE TABLE IF NOT EXISTS deadline_events (
   id INT AUTO_INCREMENT PRIMARY KEY,
   notice_id INT NOT NULL,
+  project_id INT NULL,
   kind VARCHAR(20) NOT NULL DEFAULT 'enroll',
   event_at DATETIME NULL,
   precision VARCHAR(20) NOT NULL DEFAULT 'absolute',
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  inactive_reason VARCHAR(255) NULL,
   work_hours_remaining DOUBLE NULL,
   deadline_pressure DOUBLE NULL,
   qualify_gap DOUBLE NULL,
@@ -154,5 +269,8 @@ CREATE TABLE IF NOT EXISTS deadline_events (
   UNIQUE KEY uq_deadline_notice_kind (notice_id, kind),
   KEY idx_deadline_event_at (event_at),
   KEY idx_deadline_risk (risk_level),
-  CONSTRAINT fk_deadline_notice FOREIGN KEY (notice_id) REFERENCES notices (id)
+  KEY idx_deadline_active (is_active),
+  KEY idx_deadline_project (project_id),
+  CONSTRAINT fk_deadline_notice FOREIGN KEY (notice_id) REFERENCES notices (id),
+  CONSTRAINT fk_deadline_project FOREIGN KEY (project_id) REFERENCES projects (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -104,8 +104,8 @@ export default function DeadlineCalendar() {
         title="本周截止排期"
         sub={
           <>
-            基准时刻 <span className="mono">{asOf.slice(0, 16)}</span> · 共 {events.length} 个截止事件 · 本周必投{' '}
-            <strong>{weekMustBid.length}</strong> 场
+            基准时刻 <span className="mono">{asOf.slice(0, 16)}</span> · 共 {events.length} 个有效截止事件 · 本周必投{' '}
+            <strong>{weekMustBid.length}</strong> 场 · 撤回项目已自动移出
           </>
         }
         refCode="BID-DEADLINE-2026"

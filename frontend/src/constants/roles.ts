@@ -21,6 +21,8 @@ export const PERMISSIONS: Record<Role, string[]> = {
     'review:read',
     'deadline:read',
     'deadline:recompute',
+    'project:read',
+    'project:adjudicate',
     'export:run',
     'audit:read',
   ],
@@ -35,9 +37,11 @@ export const PERMISSIONS: Record<Role, string[]> = {
     'review:read',
     'deadline:read',
     'deadline:recompute',
+    'project:read',
+    'project:adjudicate',
     'export:run',
   ],
-  client: ['notice:read', 'site:read', 'template:read', 'deadline:read', 'export:run'],
+  client: ['notice:read', 'site:read', 'template:read', 'deadline:read', 'project:read', 'export:run'],
 };
 
 export function can(role: Role | undefined, permission: string): boolean {
